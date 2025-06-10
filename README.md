@@ -22,7 +22,7 @@
 
 ## Disclaimer
 
-This is an updated version of the code accompanying the paper. Major changes include:
+This is an **unofficial** reimplementation of the paper *Textured Gaussians for Enhanced 3D Scene Appearance Modeling*. Major changes include:
 - Exact [2DGS](https://surfsplatting.github.io/) rasterization is used instead of flattening 3D Gaussians and using 3DGS rasterization as used in the original implementation. This is a more accurate way of mapping 2D textures to Gaussians.
 - The [3DGS-MCMC](https://ubc-vision.github.io/3dgs-mcmc/) densificaiton strategy is used to flexibly control the number of Gaussians in the model.
 
