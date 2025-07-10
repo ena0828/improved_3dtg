@@ -191,9 +191,9 @@ class Config:
     pretrained_path: str = None
 
     # textured gaussians
-    texture_resolution: int = 50
-    textured_rgb: bool = False
-    textured_alpha: bool = False
+    texture_resolution: int = 50#每个高斯纹理图像的大小50*50
+    textured_rgb: bool = False#是否使用rgb通道
+    textured_alpha: bool = False#是否使用Alpha通道
 
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
@@ -262,7 +262,7 @@ def create_splats_with_optimizers(
         scales = ckpt["scales"][sampled_pts_idx]
         quats = ckpt["quats"][sampled_pts_idx]
         opacities = ckpt["opacities"][sampled_pts_idx]
-    else:
+    else:#初始化高斯的形状参数（scales）、方向（quats）、不透明度（opacities）
         N = points.shape[0]
         # Initialize the GS size to be the average dist of the 3 nearest neighbors
         dist2_avg = (knn(points, 4)[:, 1:] ** 2).mean(dim=-1)  # [N,]
@@ -278,7 +278,8 @@ def create_splats_with_optimizers(
         ("quats", torch.nn.Parameter(quats), 1e-3),
         ("opacities", torch.nn.Parameter(opacities), 5e-2),
     ]
-
+    
+    #color
     # SH coefficients
     if feature_dim is None:
         # color is SH coefficients.
@@ -297,17 +298,21 @@ def create_splats_with_optimizers(
         colors = torch.logit(rgbs)  # [N, 3]
         params.append(("colors", torch.nn.Parameter(colors), 2.5e-3))  
 
+    #纹理贴图初始化（Textured Gaussians 特有）
     if cfg.model_type == "textured_gaussians":
         textures = torch.ones(points.shape[0], cfg.texture_resolution, cfg.texture_resolution, 4)
         textures[:, :, :, :3] = 0.1 # init color to low value
         textures[:, :, :, 3] = 1.0 # init alpha to 1.0
         params.append(("textures", torch.nn.Parameter(textures), 2.5e-3))
 
+    #最终封装（包括所有可训练参数）
     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
     # Scale learning rate based on batch size, reference:
     # https://www.cs.princeton.edu/~smalladi/blog/2024/01/22/SDEs-ScalingRules/
     # Note that this would not make the training exactly equivalent, see
     # https://arxiv.org/pdf/2402.18824v1
+
+    #每个参数独立的优化器（单独设置学习率）
     optimizers = {
         name: (torch.optim.SparseAdam if sparse_grad else torch.optim.Adam)(
             [{"params": splats[name], "lr": lr * math.sqrt(batch_size)}],
@@ -341,23 +346,25 @@ class Runner:
         os.makedirs(self.render_dir, exist_ok=True)
 
         # Tensorboard
+        #日志写入
         self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
 
+        #加载数据
         # Load data: Training data should contain initial points and colors.
         if cfg.dataset == "colmap":
-            self.parser = Parser(
+            self.parser = Parser(#加载点云
                 data_dir=cfg.data_dir,
                 factor=cfg.data_factor,
                 normalize=True,
                 test_every=cfg.test_every,
             )
-            self.trainset = Dataset(
+            self.trainset = Dataset(#训练数据
                 self.parser,
                 split="train",
                 patch_size=cfg.patch_size,
                 load_depths=cfg.depth_loss,
             )
-            self.valset = Dataset(self.parser, split="val")
+            self.valset = Dataset(self.parser, split="val")#验证数据
             self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         elif cfg.dataset == "blender":
             self.parser = None
@@ -397,6 +404,7 @@ class Runner:
             key_for_gradient = "means2d"
 
         # Densification Strategy
+        #密度调整策略(ADC-拆分，删除，复制)
         self.strategy = DefaultStrategy(
             verbose=True,
             prune_opa=cfg.prune_opa,
@@ -415,6 +423,7 @@ class Runner:
         self.strategy.check_sanity(self.splats, self.optimizers)
         self.strategy_state = self.cfg.strategy.initialize_state()
 
+        #相机姿态优化模块——修正sfm误差
         self.pose_optimizers = []
         if cfg.pose_opt:
             self.pose_adjust = CameraOptModule(len(self.trainset)).to(self.device)
@@ -457,15 +466,17 @@ class Runner:
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True).to(
             self.device
         )
+        #
 
         # Viewer
         if not self.cfg.disable_viewer:
-            self.server = viser.ViserServer(port=cfg.port, verbose=False)
+            self.server = viser.ViserServer(port=cfg.port)
             self.viewer = nerfview.Viewer(
                 server=self.server,
                 render_fn=self._viewer_render_fn,
                 mode="training",
             )
+
 
     def get_textures(self):
         # textures: [N, L, L, 4]
@@ -483,6 +494,7 @@ class Runner:
         textures = textures.clamp(0.0, 1.0)
         return textures
 
+    #Textured Gaussians 投影/光栅化到图像平面
     def rasterize_splats(
         self,
         camtoworlds: Tensor,
@@ -498,7 +510,7 @@ class Runner:
         scales = torch.exp(self.splats["scales"])  # [N, 3]
 
         opacities = torch.sigmoid(self.splats["opacities"]) # [N,]
-        
+        #协方差矩阵通过参数scale和quats表达
 
         image_ids = kwargs.pop("image_ids", None)
         if self.cfg.app_opt:
@@ -589,7 +601,7 @@ class Runner:
         # with open(f"{cfg.result_dir}/cfg.json", "w") as f:
         #     json.dump(vars(cfg), f)
 
-        with open(f"{cfg.result_dir}/cfg.yml", "w") as f:
+        with open(f"{cfg.result_dir}/cfg.yml", "w") as f:#保存参数到yml文件中
             yaml.dump(vars(cfg), f)
 
 
@@ -609,7 +621,7 @@ class Runner:
                     self.pose_optimizers[0], gamma=0.01 ** (1.0 / max_steps)
                 )
             )
-
+        #加载训练数据（pixels、pose等）
         trainloader = torch.utils.data.DataLoader(
             self.trainset,
             batch_size=cfg.batch_size,
@@ -620,6 +632,7 @@ class Runner:
         )
         trainloader_iter = iter(trainloader)
 
+        #主训练loop
         # Training loop.
         global_tic = time.time()
         pbar = tqdm.tqdm(range(init_step, max_steps))
@@ -628,7 +641,7 @@ class Runner:
             self.step = step
 
             if not cfg.disable_viewer:
-                while self.viewer.state.status == "paused":
+                while self.viewer.state == "paused":
                     time.sleep(0.01)
                 self.viewer.lock.acquire()
                 tic = time.time()
@@ -706,6 +719,7 @@ class Runner:
                 else:
                     raise ValueError(f"Background mode {cfg.background_mode} not supported!")
 
+            #动态密度策略（如 DefaultStrategy）在每次反向传播前做判断，判断是否应 split、prune 某些高斯点
             self.strategy.step_pre_backward(
                 params=self.splats,
                 optimizers=self.optimizers,
@@ -719,7 +733,7 @@ class Runner:
             ssimloss = 1.0 - self.ssim(
                 pixels.permute(0, 3, 1, 2), colors.permute(0, 3, 1, 2)
             )
-            loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
+            loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda#使用lambda控制两个loss占比
             if cfg.depth_loss:
                 # query depths from depth map
                 points = torch.stack(
@@ -774,7 +788,7 @@ class Runner:
                 scale_loss = cfg.scale_lambda * max_scale.mean()
                 loss += scale_loss
 
-            loss.backward()
+            loss.backward()#反向传播所有损失
 
             desc = f"loss={loss.item():.3f}| " f"sh degree={sh_degree_to_use}| "
             if cfg.depth_loss:
@@ -853,7 +867,7 @@ class Runner:
                         size=self.splats[k].size(),  # [N, ...]
                         is_coalesced=len(Ks) == 1,
                     )
-
+            #更新所有参数，调整学习率
             # optimize
             for optimizer in self.optimizers.values():
                 optimizer.step()
@@ -898,7 +912,7 @@ class Runner:
                     num_train_rays_per_step * num_train_steps_per_sec
                 )
                 # Update the viewer state.
-                self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
+                self.viewer.render_tab_state .num_train_rays_per_sec = num_train_rays_per_sec
                 # Update the scene.
                 self.viewer.update(step, num_train_rays_per_step)
 
@@ -909,12 +923,13 @@ class Runner:
         cfg = self.cfg
         device = self.device
 
+        #创建验证集
         valloader = torch.utils.data.DataLoader(
             self.valset, batch_size=1, shuffle=False, num_workers=1
         )
         ellipse_time = 0
         metrics = {"psnr": [], "ssim": [], "lpips": []}
-        for i, data in enumerate(valloader):
+        for i, data in enumerate(valloader):#读取数据
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
             pixels = data["image"].to(device) / 255.0
@@ -1016,7 +1031,8 @@ class Runner:
             imageio.imwrite(
                 f"{self.render_dir}/val_{i:04d}_distortions_{step}.png", render_dist
             )
-
+            
+            #计算图像指标
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
             metrics["psnr"].append(self.psnr(colors, pixels))

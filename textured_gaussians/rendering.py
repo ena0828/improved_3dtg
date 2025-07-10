@@ -1330,6 +1330,8 @@ def rasterization_2dgs(
     )
 
 ###### Textured Gaussians ######
+#将一组 3D Gaussians 使用贴图（Texture）进行渲染，
+# 输出图像（RGB、深度、法线、畸变等）
 def rasterization_textured_gaussians(
     means: Tensor,
     quats: Tensor,
@@ -1488,6 +1490,7 @@ def rasterization_textured_gaussians(
         ), colors.shape
         assert (sh_degree + 1) ** 2 <= colors.shape[1], colors.shape
 
+    #将 3D Gaussians 投影到图像平面
     # Compute Ray-Splat intersection transformation.
     proj_results = fully_fused_projection_2dgs(
         means,

@@ -1761,7 +1761,7 @@ def rasterize_to_pixels_2dgs(
         gs_contrib_sum, 
         gs_contrib_count
     )
-
+#完成exp9的
 def rasterize_to_pixels_textured_gaussians(
     means2d: Tensor,
     ray_transforms: Tensor,
